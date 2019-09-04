@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,8 +16,23 @@ struct measurement {
 
 void measure(struct measurement * device);
 
-int main() {
-    float sleep = 1;
+int main(int argc, char ** argv) {
+    float sleep = 0.85;
+    if (argc == 2) {
+        float arg_sleep = atof(argv[1]);
+        if (!arg_sleep) {
+            printf("%s\n", "Error: invalid argument");
+            return 1;
+        }
+        if (arg_sleep > 5 || arg_sleep < 0.5) {
+            printf("%s\n", "Error: argument must be in range from 0.5 to 5.0");
+            return 1;
+        }
+        sleep = arg_sleep;
+    } else if (argc > 2) {
+        printf("%s\n", "Error: expected single argument");
+        return 1;
+    }
     struct measurement * device = malloc(sizeof(struct measurement));
     struct timespec sleep_spec;
 
