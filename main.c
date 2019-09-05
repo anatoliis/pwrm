@@ -8,6 +8,7 @@
 #define BUFFER_SIZE 80
 #define PATH "/sys/class/powercap/intel-rapl:1/energy_uj"
 #define DEFAULT_SLEEP 0.85
+#define COOL_DOWN 0.15
 
 struct measurement_t {
     float power;
@@ -18,9 +19,16 @@ struct measurement_t {
 void measure(struct measurement_t * measurement);
 
 int main(int argc, char ** argv) {
+    struct measurement_t * measurement = malloc(sizeof(struct measurement_t));
+
+    struct timespec sleep_spec;
+    struct timespec cooldown_spec;
+
     float sleep = DEFAULT_SLEEP;
+    float arg_sleep;
+
     if (argc == 2) {
-        float arg_sleep = atof(argv[1]);
+        arg_sleep = atof(argv[1]);
         if (!arg_sleep) {
             printf("%s\n", "Error: invalid argument");
             return 1;
@@ -34,8 +42,6 @@ int main(int argc, char ** argv) {
         printf("%s\n", "Error: expected a single argument");
         return 1;
     }
-    struct measurement_t * measurement = malloc(sizeof(struct measurement_t));
-    struct timespec sleep_spec;
 
     measurement->power = 0;
     measurement->last_value = 0;
@@ -44,7 +50,10 @@ int main(int argc, char ** argv) {
 
     sleep_spec.tv_sec = (time_t) sleep;
     sleep_spec.tv_nsec = (suseconds_t) ((sleep - sleep_spec.tv_sec)	* 1000000000.);
+    cooldown_spec.tv_sec = (time_t) COOL_DOWN;
+    cooldown_spec.tv_nsec = (suseconds_t) ((COOL_DOWN - cooldown_spec.tv_sec) * 1000000000.);
 
+    nanosleep(&cooldown_spec, NULL);
     measure(measurement);
     nanosleep(&sleep_spec, NULL);
     measure(measurement);
