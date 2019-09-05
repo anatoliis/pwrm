@@ -43,6 +43,8 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    sleep -= COOL_DOWN;
+
     measurement->power = 0;
     measurement->last_value = 0;
     measurement->measure_time.tv_sec = 0;
