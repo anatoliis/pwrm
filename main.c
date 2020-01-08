@@ -7,8 +7,8 @@
 
 #define BUFFER_SIZE 80
 #define PATH "/sys/class/powercap/intel-rapl:1/energy_uj"
-#define DEFAULT_SLEEP 0.85
-#define COOL_DOWN 0.15
+#define DEFAULT_SLEEP 1.0
+#define COOL_DOWN 0.12
 
 struct measurement_t {
     float power;
