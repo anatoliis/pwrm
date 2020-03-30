@@ -1,102 +1,171 @@
 #include <ctype.h>
 #include <fcntl.h>
+#include <locale.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
-#define BUFFER_SIZE 80
 #define PATH "/sys/class/powercap/intel-rapl:1/energy_uj"
-#define DEFAULT_SLEEP 1.0
-#define COOL_DOWN 0.12
+#define BUFFER_SIZE 80
+#define DURATION_MIN 0.1
+#define DURATION_MAX 60.
+#define DEFAULT_DURATION 1.
+#define COOL_DOWN 0.1
+#define CONTINUOUS_ARG "--continuous"
 
-struct measurement_t {
-    float power;
-    int64_t last_value;
-    struct timespec measure_time;
-};
+void print_help() {
+    printf(
+        "Usage:\n  > pwrm [duration] [%s]\n\n"
+        "Arguments:\n"
+        "  [duration]\t\t\tMeasurement duration in seconds (from %.1f to %.1f)\n"
+        "  %s\t\t\tPerform continuous measurements with a given interval\n"
+        "  --help\t\t\tShow this message\n\n"
+        "Return value:\n  Average power usage in Watts during given time period\n\n"
+        "Examples:\n"
+        "  > pwrm\t\t\tSingle measurement with default duration - %.2f sec\n"
+        "  > pwrm %.1f\t\t\tSingle measurement with %.1f sec duration\n"
+        "  > pwrm %s\t\tContinuous measurement with default intervals - %.2f sec\n"
+        "  > pwrm %.1f %s\tContinuous measurement with %.1f sec intervals\n",
+        CONTINUOUS_ARG,
+        DURATION_MIN, DURATION_MAX,
+        CONTINUOUS_ARG,
+        DEFAULT_DURATION,
+        1.5, 1.5,
+        CONTINUOUS_ARG, DEFAULT_DURATION,
+        1.5, CONTINUOUS_ARG, 1.5
+    );
+}
 
-void measure(struct measurement_t * measurement);
+void print_unexpected_arg(char * arg) {
+    printf("\033[0;31mUnexpected argument: %s\033[0m\n\n", arg);
+    print_help();
+}
+
+void print_invalid_duration(char * duration_arg) {
+    printf(
+        "\033[0;31mInvalid duration value: %s\033[0m\n"
+        "Duration must be in range from %.1f to %.1f\n\n",
+        duration_arg, DURATION_MIN, DURATION_MAX
+    );
+    print_help();
+}
+
+double parse_duration(char * arg) {
+    double duration = atof(arg);
+    int i;
+    
+    if (!duration) {
+        print_unexpected_arg(arg);
+        return 0;
+    }
+    for (i = 0; arg[i] != '\0'; i++) {
+        if (isdigit(arg[i]) == 0 && arg[i] != *localeconv()->decimal_point) {
+            print_invalid_duration(arg);
+            return 0;
+        }
+    }
+    if (duration < DURATION_MIN || duration > DURATION_MAX) {
+        print_invalid_duration(arg);
+        return 0;
+    }
+    return duration;
+}
+
+void fill_timespec(struct timespec * timespec_var, float time) {
+    timespec_var->tv_sec = (time_t) time;
+    timespec_var->tv_nsec = (suseconds_t) ((time - timespec_var->tv_sec) * 1000000000.);
+}
+
+// TODO: implement automatic path retrieval
+char * get_path() {
+    return PATH;
+}
 
 int main(int argc, char ** argv) {
-    struct measurement_t * measurement = malloc(sizeof(struct measurement_t));
+    double sleep = DEFAULT_DURATION;
+    bool continuous_measurement = false;
+    
+    double power_used;
+    int64_t power_value;
+    int64_t last_power_value;
+    
+    int file_descriptor;
+    char buffer[BUFFER_SIZE];
+    int data_size;
 
     struct timespec sleep_spec;
     struct timespec cooldown_spec;
-
-    float sleep = DEFAULT_SLEEP;
-    float arg_sleep;
-
+    struct timespec measure_time;
+    struct timespec time_now;
+    struct timespec time_diff;
+    
+    int64_t time_diff_nsec;
+    
     if (argc == 2) {
-        arg_sleep = atof(argv[1]);
-        if (!arg_sleep) {
-            printf("%s\n", "Error: invalid argument");
+        if (strcmp(argv[1], "--help") == 0) {
+            print_help();
+            return 0;
+        }
+        if (strcmp(argv[1], CONTINUOUS_ARG) == 0) {
+            continuous_measurement = true;
+        } else {
+            double arg = parse_duration(argv[1]);
+            if (!arg) return 1;
+            sleep = arg;
+        }
+    } else if (argc == 3) {
+        double arg = parse_duration(argv[1]);
+        if (!arg) return 1;
+        sleep = arg;
+        
+        if (strcmp(argv[2], CONTINUOUS_ARG) == 0) {
+            continuous_measurement = true;
+        } else {
+            print_unexpected_arg(argv[2]);
             return 1;
         }
-        if (arg_sleep > 5 || arg_sleep < 0.5) {
-            printf("%s\n", "Error: argument must be in range from 0.5 to 5.0");
-            return 1;
-        }
-        sleep = arg_sleep;
-    } else if (argc > 2) {
-        printf("%s\n", "Error: expected a single argument");
+    } else if (argc > 3) {
+        printf("\033[0;31mInvalid number of arguments\033[0m\n\n");
+        print_help();
         return 1;
     }
+    
+    fill_timespec(&cooldown_spec, COOL_DOWN);
+    fill_timespec(&sleep_spec, sleep);
 
-    sleep -= COOL_DOWN;
-
-    measurement->power = 0;
-    measurement->last_value = 0;
-    measurement->measure_time.tv_sec = 0;
-    measurement->measure_time.tv_nsec = 0;
-
-    sleep_spec.tv_sec = (time_t) sleep;
-    sleep_spec.tv_nsec = (suseconds_t) ((sleep - sleep_spec.tv_sec)	* 1000000000.);
-    cooldown_spec.tv_sec = (time_t) COOL_DOWN;
-    cooldown_spec.tv_nsec = (suseconds_t) ((COOL_DOWN - cooldown_spec.tv_sec) * 1000000000.);
+    file_descriptor = open(get_path(), O_RDONLY);
+    if (file_descriptor < 0) return 1;
 
     nanosleep(&cooldown_spec, NULL);
-    measure(measurement);
-    nanosleep(&sleep_spec, NULL);
-    measure(measurement);
 
-    if (measurement->power == 0) {
-        nanosleep(&sleep_spec, NULL);
-        measure(measurement);
-    }
-
-    printf("%4.02f W\n", measurement->power);
-}
-
-void measure(struct measurement_t * measurement) {
-    char buffer[BUFFER_SIZE];
-    int file_descriptor = open(PATH, O_RDONLY);
-    if (file_descriptor >= 0) {
-        int size = read(file_descriptor, buffer, BUFFER_SIZE - 1);
-        if (size > 0) {
-            struct timespec time_now;
-            double power = 0;
-            buffer[buffer[size - 1] == '\n' ? size - 1 : size] = '\0';
-            int64_t value = (int64_t) atoll(buffer);
-            clock_gettime(CLOCK_MONOTONIC, &time_now);
-            if (measurement->last_value > 0 && value >= measurement->last_value) {
-                struct timespec time_diff;
-                int64_t diff;
-                time_diff.tv_sec = time_now.tv_sec - measurement->measure_time.tv_sec;
-                time_diff.tv_nsec = time_now.tv_nsec - measurement->measure_time.tv_nsec;
-                while (time_diff.tv_nsec < 0) {
-                    time_diff.tv_nsec += 1000000000;
-                    time_diff.tv_sec--;
-                }
-                diff = (int64_t) (time_diff.tv_sec * 1000000000 + time_diff.tv_nsec);
-                power = (double) (value - measurement->last_value) * 1000 / diff;
-            } else {
-                power = measurement->power;
+    while (1) {
+        lseek(file_descriptor, 0, SEEK_SET);
+        data_size = read(file_descriptor, buffer, BUFFER_SIZE - 1);
+        clock_gettime(CLOCK_MONOTONIC, &time_now);
+        
+        if (data_size > 0) {
+            buffer[buffer[data_size - 1] == '\n' ? data_size - 1 : data_size] = '\0';
+            power_value = (int64_t) atoll(buffer);
+            
+            if (last_power_value > 0 && power_value >= last_power_value) {
+                time_diff.tv_sec = time_now.tv_sec - measure_time.tv_sec;
+                time_diff.tv_nsec = time_now.tv_nsec - measure_time.tv_nsec;
+                time_diff_nsec = (int64_t) (time_diff.tv_sec * 1000000000 + time_diff.tv_nsec);
+                
+                power_used = (double) (power_value - last_power_value) * 1000 / time_diff_nsec;
+                printf("%4.02f\n", power_used);
+                if (continuous_measurement == false) break;
             }
-            measurement->last_value = value;
-            measurement->measure_time = time_now;
-            measurement->power = power;
+            
+            last_power_value = power_value;
+            measure_time = time_now;
         }
-        close(file_descriptor);
+        
+        nanosleep(&sleep_spec, NULL);
     }
+    
+    close(file_descriptor);
 }
